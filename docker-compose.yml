@@ -1,0 +1,9 @@
+services:
+  server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      # set to your Vercel URL(s), e.g. https://bot-online.vercel.app  (comma-separated). Empty = allow any.
+      CORS_ORIGIN: ${CORS_ORIGIN:-}

@@ -26,6 +26,12 @@ export function Board({ view, names, db, send, onRematch, onLeave }: Props) {
   const [mode, setMode] = useState<Mode>(null);
   const [pile, setPile] = useState<null | "deck" | "myHell" | "oppHell" | "myDark" | "oppDark">(null);
   const [swap, setSwap] = useState<string[]>([]);
+  const [scoutOpen, setScoutOpen] = useState(false);
+  const [scoutN, setScoutN] = useState(3);
+  const [scoutOf, setScoutOf] = useState<"me" | "opp">("me");
+  const [scoutPick, setScoutPick] = useState<string[]>([]);
+  const [scoutTo, setScoutTo] = useState<"hand" | "hell" | "dark">("hand");
+  const [scoutRest, setScoutRest] = useState<"bottom" | "top" | "shuffle">("bottom");
   const [toast, setToast] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -35,6 +41,7 @@ export function Board({ view, names, db, send, onRematch, onLeave }: Props) {
   useEffect(() => { logRef.current?.scrollTo(0, 1e9); }, [view.log.length]);
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(""), 4000); return () => clearTimeout(t); } }, [toast]);
   useEffect(() => { setMode(null); }, [view.turn, view.phase]);
+  useEffect(() => { if (!view.scout) { setScoutPick([]); setScoutTo("hand"); setScoutRest("bottom"); } }, [view.scout]);
 
   const act = async (a: Action) => {
     const err = await send(a);
@@ -58,6 +65,7 @@ export function Board({ view, names, db, send, onRematch, onLeave }: Props) {
   };
 
   const click = (id: string) => {
+    if (view.scout?.ids.includes(id) && view.scout.seat === me) return setScoutPick((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
     if (view.phase === "mulligan") return setSwap((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
     const w = where(id);
     if (mode?.k === "pay" && w?.zone === "hand" && w.seat === me && id !== mode.target) {
@@ -80,12 +88,13 @@ export function Board({ view, names, db, send, onRematch, onLeave }: Props) {
     const c = card(id);
     if (back || !c || !id) return <div key={id ?? "back"} className={`card back ${small ? "small" : ""}`}>BoT</div>;
     const isPay = mode?.k === "pay" && (mode.pay.includes(id) || mode.target === id);
+    const picked = scoutPick.includes(id);
     const targetable = (mode?.k === "attack" && where(id)?.seat === opp && ["avatar", "construct"].includes(where(id)!.zone)) || (mode?.k === "equip" && where(id)?.zone === "avatar");
     const showPower = slot && (c.type === "Avatar" || c.type === "Construct" || c.type === "Token");
     return (
       <div
         key={id}
-        className={`card ${slot?.tapped ? "tapped" : ""} ${sel === id ? "sel" : ""} ${isPay ? "pay" : ""} ${targetable ? "target" : ""}`}
+        className={`card ${slot?.tapped ? "tapped" : ""} ${sel === id ? "sel" : ""} ${isPay || picked ? "pay" : ""} ${targetable ? "target" : ""}`}
         onClick={(e) => { e.stopPropagation(); click(id); }}
         onMouseEnter={() => setHoverId(id)}
         title={c.name}
@@ -262,6 +271,54 @@ export function Board({ view, names, db, send, onRematch, onLeave }: Props) {
           </div>
         )}
 
+        {scoutOpen && !view.scout && (
+          <div className="overlay" onClick={() => setScoutOpen(false)}>
+            <div className="box" onClick={(e) => e.stopPropagation()}>
+              <h3>🔍 สอดแนม</h3>
+              <div className="muted">เปิดการ์ดบนสุดของ Deck ให้ทั้งสองฝ่ายเห็น แล้วเลือกใบที่จะเอา ที่เหลือกลับเข้า Deck</div>
+              <div className="row">
+                จำนวน <input type="number" min={1} max={20} value={scoutN} onChange={(e) => setScoutN(Number(e.target.value))} style={{ width: 70 }} /> ใบ
+                <select value={scoutOf} onChange={(e) => setScoutOf(e.target.value as "me" | "opp")}>
+                  <option value="me">Deck ของเรา ({P[me].deckCount})</option>
+                  <option value="opp">Deck ฝ่ายตรงข้าม ({P[opp].deckCount})</option>
+                </select>
+              </div>
+              <div className="row">
+                <button className="primary" onClick={() => act({ t: "scout", n: scoutN, of: scoutOf === "me" ? me : opp }).then((e) => !e && setScoutOpen(false))}>เปิดการ์ด</button>
+                <button onClick={() => setScoutOpen(false)}>ยกเลิก</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view.scout && (
+          <div className="overlay">
+            <div className="box">
+              <h3>🔍 {view.scout.seat === me ? "คุณ" : names[view.scout.seat]} สอดแนม {view.scout.ids.length} ใบจาก Deck {view.scout.of === view.scout.seat ? "ตัวเอง" : view.scout.of === me ? "ของคุณ" : "ฝ่ายตรงข้าม"}</h3>
+              <div className="grid-cards">{view.scout.ids.map((id) => Cd({ id }))}</div>
+              <div className="muted">{view.scout.ids.map((id) => card(id)?.name).join(" · ")}</div>
+              {view.scout.seat === me ? (
+                <>
+                  <div className="muted">คลิกการ์ดที่ต้องการเลือก (กรอบสีฟ้า = เลือกแล้ว {scoutPick.length} ใบ)</div>
+                  <div className="row">
+                    ใบที่เลือก →
+                    <select value={scoutTo} onChange={(e) => setScoutTo(e.target.value as "hand" | "hell" | "dark")}>
+                      <option value="hand">ขึ้นมือ</option><option value="hell">ลงนรก</option><option value="dark">เนรเทศ (มิติมืด)</option>
+                    </select>
+                    ใบที่เหลือ →
+                    <select value={scoutRest} onChange={(e) => setScoutRest(e.target.value as "bottom" | "top" | "shuffle")}>
+                      <option value="bottom">ใส่ใต้ Deck</option><option value="top">วางบน Deck</option><option value="shuffle">กลับเข้า Deck แล้วสับ</option>
+                    </select>
+                  </div>
+                  <div className="row">
+                    <button className="primary" onClick={() => act({ t: "scoutDone", pick: scoutPick, to: scoutTo, rest: scoutRest })}>ยืนยัน (เลือก {scoutPick.length} ใบ)</button>
+                  </div>
+                </>
+              ) : <div className="muted">รอฝ่ายตรงข้ามเลือก…</div>}
+            </div>
+          </div>
+        )}
+
         {pile && (
           <div className="overlay" onClick={() => setPile(null)}>
             <div className="box" onClick={(e) => e.stopPropagation()}>
@@ -334,6 +391,7 @@ export function Board({ view, names, db, send, onRematch, onLeave }: Props) {
           <button onClick={() => act({ t: "draw", n: 1 })}>จั่ว 1</button>
           <button onClick={() => act({ t: "shuffle" })}>สับ Deck</button>
           <button onClick={() => setPile("deck")}>ค้นหา Deck</button>
+          <button onClick={() => setScoutOpen(true)} disabled={!!view.scout || view.phase === "mulligan"}>🔍 สอดแนม</button>
           <button onClick={() => act({ t: "dice" })}>🎲</button>
           <button className="danger" onClick={() => confirm("ยอมแพ้?") && act({ t: "concede" })}>ยอมแพ้</button>
         </div>

@@ -37,6 +37,11 @@ export interface Pending {
   target: Target;
   by: Seat;
 }
+export interface Scout {
+  seat: Seat; // who is scouting
+  of: Seat; // whose deck
+  ids: string[]; // revealed cards (still on top of that deck)
+}
 export interface Game {
   cards: Record<string, { key: string; owner: Seat }>;
   players: [PlayerState, PlayerState];
@@ -46,6 +51,7 @@ export interface Game {
   turnNo: number;
   phase: Phase;
   pending: Pending | null;
+  scout: Scout | null;
   winner: Seat | null;
   log: string[];
 }
@@ -64,6 +70,8 @@ export type Action =
   | { t: "shuffle" }
   | { t: "flip"; id: string }
   | { t: "dice" }
+  | { t: "scout"; n: number; of?: Seat }
+  | { t: "scoutDone"; pick: string[]; to: "hand" | "hell" | "dark"; rest: "top" | "bottom" | "shuffle" }
   | { t: "concede" };
 
 let DB: CardDB = {};
@@ -83,7 +91,7 @@ export function shuffle<T>(a: T[], rnd: () => number = Math.random): T[] {
 const emptyPlayer = (): PlayerState => ({ deck: [], hand: [], avatar: [], magic: [], construct: [], hell: [], dark: [], life: [], mulliganDone: false });
 
 export function createGame(decks: [DeckList, DeckList], first: Seat = Math.random() < 0.5 ? 0 : 1, rnd = Math.random): Game {
-  const g: Game = { cards: {}, players: [emptyPlayer(), emptyPlayer()], land: null, first, turn: first, turnNo: 0, phase: "mulligan", pending: null, winner: null, log: [] };
+  const g: Game = { cards: {}, players: [emptyPlayer(), emptyPlayer()], land: null, first, turn: first, turnNo: 0, phase: "mulligan", pending: null, scout: null, winner: null, log: [] };
   ([0, 1] as Seat[]).forEach((s) => {
     let n = 0;
     const mk = (key: string) => {
@@ -337,8 +345,40 @@ function run(g: Game, seat: Seat, a: Action): string | null {
     return null;
   }
 
+  if (g.scout && a.t !== "scoutDone" && a.t !== "dice") return "จบการสอดแนมให้เสร็จก่อน";
+
   switch (a.t) {
     case "mulligan": return "ไม่ใช่ช่วงเปลี่ยนการ์ด";
+
+    case "scout": {
+      const of = a.of ?? seat;
+      const deck = g.players[of].deck;
+      const n = Math.floor(a.n);
+      if (!(n >= 1 && n <= 20)) return "จำนวนใบไม่ถูกต้อง (1-20)";
+      if (n > deck.length) return `Deck เหลือ ${deck.length} ใบ`;
+      g.scout = { seat, of, ids: deck.slice(0, n) };
+      log(g, `🔍 ${who(seat)} สอดแนม ${n} ใบจาก Deck ${of === seat ? "ตัวเอง" : "ฝ่ายตรงข้าม"}: ${g.scout.ids.map((id) => `“${name(g, id)}”`).join(", ")}`);
+      return null;
+    }
+    case "scoutDone": {
+      const sc = g.scout;
+      if (!sc) return "ไม่ได้กำลังสอดแนม";
+      if (sc.seat !== seat) return "รอผู้สอดแนมเลือก";
+      const deck = g.players[sc.of].deck;
+      const ids = sc.ids.filter((id) => deck.includes(id)); // ignore cards moved away manually
+      const pick = [...new Set(a.pick)];
+      if (pick.some((id) => !ids.includes(id))) return "เลือกได้เฉพาะการ์ดที่สอดแนม";
+      const rest = ids.filter((id) => !pick.includes(id));
+      for (const id of ids) deck.splice(deck.indexOf(id), 1);
+      for (const id of pick) place(g, id, a.to, g.cards[id].owner);
+      if (a.rest === "top") deck.unshift(...rest);
+      else deck.push(...rest);
+      if (a.rest === "shuffle") shuffle(deck);
+      g.scout = null;
+      const dest = { hand: "ขึ้นมือ", hell: "ลงนรก", dark: "เข้ามิติมืด" }[a.to];
+      log(g, `🔍 ${who(seat)} เลือก ${pick.length} ใบ${pick.length ? `${dest} (${pick.map((id) => `“${name(g, id)}”`).join(", ")})` : ""} — ที่เหลือ ${rest.length} ใบ${{ top: "วางบน Deck", bottom: "ใส่ใต้ Deck", shuffle: "กลับเข้า Deck แล้วสับ" }[a.rest]}`);
+      return null;
+    }
 
     case "next": {
       if (!myTurn) return "ไม่ใช่เทิร์นของคุณ";
@@ -490,6 +530,7 @@ export interface View {
   first: Seat;
   winner: Seat | null;
   pending: Pending | null;
+  scout: Scout | null;
   land: { id: string; owner: Seat } | null;
   cards: Record<string, string>; // id -> card key (only visible ones)
   players: [PView, PView];
@@ -525,5 +566,6 @@ export function viewFor(g: Game, seat: Seat): View {
   }) as [PView, PView];
   for (const p of players) delete (p as Partial<PlayerState>).deck;
   if (g.land) show(g.land.id);
-  return { me: seat, turn: g.turn, turnNo: g.turnNo, phase: g.phase, first: g.first, winner: g.winner, pending: g.pending, land: g.land, cards, players, log: g.log.slice(-80) };
+  g.scout?.ids.forEach(show); // revealed to both players
+  return { me: seat, turn: g.turn, turnNo: g.turnNo, phase: g.phase, first: g.first, winner: g.winner, pending: g.pending, scout: g.scout, land: g.land, cards, players, log: g.log.slice(-80) };
 }

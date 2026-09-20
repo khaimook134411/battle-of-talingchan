@@ -231,3 +231,51 @@ describe("deck validation", () => {
     expect(validateDeck(db, { name: "5x", main: [...main.slice(0, 49), main[1]], life }).errors.join()).toMatch(/สูงสุด|Only/);
   });
 });
+
+describe("scout (สอดแนม)", () => {
+  function scoutGame() {
+    const g = game([[], []], 12);
+    startMain(g);
+    return g;
+  }
+  it("reveals top N to both players, blocks other actions, then resolves picks + rest", () => {
+    const g = scoutGame();
+    const top = g.players[0].deck.slice(0, 3);
+    const before = g.players[0].deck.length;
+    expect(applyAction(g, 0, { t: "scout", n: 3 })).toBeNull();
+    // opponent can see the revealed cards, nothing else of the deck
+    const v = viewFor(g, 1);
+    expect(v.scout?.ids).toEqual(top);
+    for (const id of top) expect(v.cards[id]).toBeDefined();
+    expect(v.cards[g.players[0].deck[3]]).toBeUndefined();
+    // other actions are blocked until resolved; opponent cannot resolve
+    expect(applyAction(g, 0, { t: "draw" })).toMatch(/สอดแนม/);
+    expect(applyAction(g, 1, { t: "scoutDone", pick: [], to: "hand", rest: "shuffle" })).toMatch(/รอ/);
+    // can only pick scouted cards
+    expect(applyAction(g, 0, { t: "scoutDone", pick: [g.players[0].deck[5]], to: "hand", rest: "bottom" })).toMatch(/เฉพาะ/);
+    const hand = g.players[0].hand.length;
+    expect(applyAction(g, 0, { t: "scoutDone", pick: [top[1]], to: "hand", rest: "bottom" })).toBeNull();
+    expect(g.scout).toBeNull();
+    expect(g.players[0].hand).toContain(top[1]);
+    expect(g.players[0].hand).toHaveLength(hand + 1);
+    expect(g.players[0].deck).toHaveLength(before - 1);
+    expect(g.players[0].deck.slice(-2)).toEqual([top[0], top[2]]); // rest went under the deck
+  });
+  it("rest can go back on top or be shuffled; cannot scout more than the deck holds", () => {
+    const g = scoutGame();
+    const top = g.players[0].deck.slice(0, 2);
+    applyAction(g, 0, { t: "scout", n: 2 });
+    applyAction(g, 0, { t: "scoutDone", pick: [], to: "hand", rest: "top" });
+    expect(g.players[0].deck.slice(0, 2)).toEqual(top);
+    expect(applyAction(g, 0, { t: "scout", n: 99 })).toMatch(/20|เหลือ/);
+    expect(applyAction(g, 0, { t: "scout", n: g.players[0].deck.length + 1 })).toMatch(/เหลือ/);
+  });
+  it("can scout the opponent's deck; picked cards go to their owner's zone", () => {
+    const g = scoutGame();
+    const top = g.players[1].deck[0];
+    expect(applyAction(g, 0, { t: "scout", n: 1, of: 1 })).toBeNull();
+    expect(applyAction(g, 0, { t: "scoutDone", pick: [top], to: "hell", rest: "shuffle" })).toBeNull();
+    expect(g.players[1].hell).toContain(top);
+    expect(g.players[0].hell).not.toContain(top);
+  });
+});

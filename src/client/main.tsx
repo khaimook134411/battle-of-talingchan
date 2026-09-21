@@ -5,7 +5,7 @@ import { CardDB, DeckList, validateDeck } from "../shared/deck";
 import type { Action, View } from "../shared/game";
 import { Board } from "./Board";
 import { DeckBuilder } from "./DeckBuilder";
-import { decksStore, emit, loadCards, nameStore, sessionStore, socket } from "./api";
+import { decksStore, emit, initialRoom, inviteLink, loadCards, nameStore, saveServerUrl, serverUrl, sessionStore, socket } from "./api";
 import "./style.css";
 
 interface RoomInfo {
@@ -15,13 +15,43 @@ interface RoomInfo {
   inGame: boolean;
 }
 
+type Conn = "connecting" | "ok" | "error";
+
+function ServerPanel({ conn }: { conn: Conn }) {
+  const [url, setUrl] = useState(serverUrl());
+  const [msg, setMsg] = useState("");
+  const save = () => {
+    const r = saveServerUrl(url);
+    if (r === null) return setMsg("URL ไม่ถูกต้อง เช่น https://xxxx.trycloudflare.com");
+    location.reload(); // socket is created once at startup with the saved URL
+  };
+  const label = { ok: "เชื่อมต่อแล้ว", connecting: "กำลังเชื่อมต่อ…", error: "ต่อเซิร์ฟเวอร์ไม่ได้" }[conn];
+  const color = { ok: "#7fdc8a", connecting: "#f5c542", error: "#ff8080" }[conn];
+  return (
+    <details open={conn === "error"} style={{ border: "1px solid #333", borderRadius: 8, padding: "6px 10px" }}>
+      <summary style={{ cursor: "pointer" }}><span style={{ color }}>●</span> เซิร์ฟเวอร์: {label}</summary>
+      <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+        <input placeholder="https://xxxx.trycloudflare.com (ว่าง = เซิร์ฟเวอร์เดียวกับหน้าเว็บ)" value={url} onChange={(e) => setUrl(e.target.value)} />
+        <div className="row">
+          <button className="primary" onClick={save}>บันทึกและเชื่อมต่อใหม่</button>
+          <button onClick={() => navigator.clipboard?.writeText(inviteLink()).then(() => setMsg("คัดลอกลิงก์เชิญแล้ว — ส่งให้เพื่อนได้เลย"))} disabled={!serverUrl()}>คัดลอกลิงก์เชิญ</button>
+        </div>
+        {msg && <div className="muted">{msg}</div>}
+        {conn === "error" && <div className="err">ถ้า tunnel เพิ่งเปลี่ยน URL ให้วาง URL ใหม่ที่นี่ (ไม่ต้อง deploy เว็บใหม่)</div>}
+      </div>
+    </details>
+  );
+}
+
 function App() {
   const [data, setData] = useState<{ cards: Card[]; db: CardDB } | null>(null);
   const [screen, setScreen] = useState<"home" | "decks">("home");
   const [room, setRoom] = useState<RoomInfo | null>(null);
   const [view, setView] = useState<View | null>(null);
   const [name, setName] = useState(nameStore.get());
-  const [code, setCode] = useState("");
+  const [code, setCode] = useState(initialRoom);
+  const [conn, setConn] = useState<Conn>(socket.connected ? "ok" : "connecting");
+  const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
   const [deckIdx, setDeckIdx] = useState(0);
   const [pickDeck, setPickDeck] = useState(false); // after game over: back to deck selection
@@ -41,15 +71,21 @@ function App() {
       const res = await emit("rejoin", s);
       if (res.error) { sessionStore.set(null); setRoom(null); setView(null); }
     };
+    const onOk = () => setConn("ok");
+    const onBad = () => setConn("error");
+    socket.on("connect", onOk);
+    socket.on("connect_error", onBad);
+    socket.on("disconnect", onBad);
     socket.on("room", onRoom);
     socket.on("state", onState);
     socket.on("connect", tryRejoin);
     if (socket.connected) tryRejoin();
-    return () => { socket.off("room", onRoom); socket.off("state", onState); socket.off("connect", tryRejoin); };
+    return () => { socket.off("connect", onOk); socket.off("connect_error", onBad); socket.off("disconnect", onBad); socket.off("room", onRoom); socket.off("state", onState); socket.off("connect", tryRejoin); };
   }, []);
 
   const enter = async (ev: "create" | "join") => {
     setErr("");
+    if (conn !== "ok") return setErr("ยังไม่ได้เชื่อมต่อเซิร์ฟเวอร์ — ตรวจสอบ URL ในแผง “เซิร์ฟเวอร์” ด้านล่าง");
     nameStore.set(name);
     const res = await emit(ev, ev === "create" ? name : { code, name });
     if (res.error) return setErr(res.error);
@@ -98,8 +134,10 @@ function App() {
           <button className="primary" disabled={!!check.errors.length || me.ready || room.seats.length < 2} onClick={ready}>{me.ready ? "รออีกฝ่าย…" : room.seats.length < 2 ? "รอเพื่อนเข้าห้อง" : "พร้อมเล่น"}</button>
           <button onClick={() => setScreen("decks")}>แก้ไข Deck</button>
           <button onClick={leave}>ออกจากห้อง</button>
+          <button onClick={() => navigator.clipboard?.writeText(inviteLink(room.code)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); })}>{copied ? "คัดลอกแล้ว ✓" : "คัดลอกลิงก์ชวนเพื่อน"}</button>
         </div>
         {err && <div className="err">{err}</div>}
+        {conn !== "ok" && <ServerPanel conn={conn} />}
       </div>
     );
   }
@@ -116,6 +154,7 @@ function App() {
         <button disabled={!name.trim() || code.length !== 4} onClick={() => enter("join")}>เข้าร่วม</button>
       </div>
       {err && <div className="err">{err}</div>}
+      <ServerPanel conn={conn} />
     </div>
   );
 }
